@@ -1,12 +1,12 @@
-// main.py
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime
 import pdfkit
 import jinja2
 import os
 import requests
+import smtplib
+from email.message import EmailMessage
 
 app = FastAPI()
 
@@ -17,7 +17,7 @@ template_env = jinja2.Environment(loader=template_loader)
 template_file = "soul_blueprint_template.html"
 
 # -- AstroAPI Configuration --
-ASTRO_API_KEY = "5e915b420de037073506616289acf5d530dd4946"
+ASTRO_API_KEY = os.getenv("ASTRO_API_KEY")
 ASTRO_API_URL = "https://api.astroapi.dev/api/v1/planets"
 
 def get_astrology_data(birth_date, birth_time, birth_place):
@@ -46,22 +46,49 @@ def render_pdf_from_template(data):
     pdfkit.from_string(html_content, output_path)
     return output_path
 
-# -- Input Schema --
+def send_email_with_attachment(to_email, subject, body, attachment_path):
+    msg = EmailMessage()
+    email_address = os.getenv("EMAIL_ADDRESS")
+    email_password = os.getenv("EMAIL_PASSWORD")
+
+    msg['Subject'] = subject
+    msg['From'] = email_address
+    msg['To'] = to_email
+    msg.set_content(body)
+
+    with open(attachment_path, 'rb') as f:
+        file_data = f.read()
+        file_name = os.path.basename(attachment_path)
+        msg.add_attachment(file_data, maintype='application', subtype='pdf', filename=file_name)
+
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+        smtp.login(email_address, email_password)
+        smtp.send_message(msg)
+
 class SoulInput(BaseModel):
     name: str
-    birth_date: str  # YYYY-MM-DD
-    birth_time: str  # HH:MM
+    birth_date: str
+    birth_time: str
     birth_place: str
     email: Optional[str] = None
 
-# -- Numerology Logic --
 def calculate_life_path(birth_date):
     digits = [int(d) for d in birth_date if d.isdigit()]
     while sum(digits) > 9 and sum(digits) not in [11, 22, 33]:
         digits = [int(d) for d in str(sum(digits))]
     return sum(digits)
 
-# -- Main Endpoint --
+def basic_hd_logic(birth_time):
+    hour = int(birth_time.split(":")[0])
+    if 6 <= hour < 12:
+        return {"type": "Generator", "authority": "Sacral"}
+    elif 12 <= hour < 18:
+        return {"type": "Projector", "authority": "Emotional"}
+    elif 18 <= hour < 22:
+        return {"type": "Manifestor", "authority": "Splenic"}
+    else:
+        return {"type": "Reflector", "authority": "Lunar"}
+
 @app.post("/generate-soul-blueprint")
 def generate_blueprint(input_data: SoulInput):
     try:
@@ -69,10 +96,8 @@ def generate_blueprint(input_data: SoulInput):
         astrology = get_astrology_data(
             input_data.birth_date, input_data.birth_time, input_data.birth_place
         )
-        human_design = {
-            "type": "Projector",
-            "authority": "Emotional"
-        }
+        human_design = basic_hd_logic(input_data.birth_time)
+
         pdf_path = render_pdf_from_template({
             "name": input_data.name,
             "sun_sign": astrology['sun_sign'],
@@ -82,6 +107,16 @@ def generate_blueprint(input_data: SoulInput):
             "authority": human_design['authority'],
             "life_path": life_path
         })
-        return {"message": "Blueprint generated", "pdf_path": pdf_path}
+
+        if input_data.email:
+            send_email_with_attachment(
+                to_email=input_data.email,
+                subject="Your Soul Blueprint Report",
+                body="Here is your personalized Soul Blueprint report. ✨",
+                attachment_path=pdf_path
+            )
+
+        return {"message": "Blueprint generated and sent", "pdf_path": pdf_path}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
