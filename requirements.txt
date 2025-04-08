@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+pdfkit
+jinja2
+requests
+python-multipart
